@@ -43,6 +43,16 @@ double q_des[MAX_DOF];
 double tau_des[MAX_DOF];
 double cur_des[MAX_DOF];
 
+// DIY mode variables
+bool diy_mode = false;
+int selected_dof = 0;
+const double diy_step = 0.1; // radian increment/decrement step
+
+// Monitor mode variables
+bool monitor_mode = false;
+const int monitor_update_rate = 10; // Update display every N message cycles
+int monitor_counter = 0;
+
 // USER HAND CONFIGURATION
 const bool	RIGHT_HAND = false;
 const int	HAND_VERSION = 4;
@@ -60,6 +70,8 @@ int GetCANChannelIndex(const TCHAR* cname);
 bool CreateBHandAlgorithm();
 void DestroyBHandAlgorithm();
 void ComputeTorque();
+void PrintDOFPositions();
+void PrintJointValues();
 
 /////////////////////////////////////////////////////////////////////////////////////////
 // Read keyboard input (one char) from stdin
@@ -155,6 +167,15 @@ static void* ioThreadProc(void* inst)
                         q[i] = (double)(vars.enc_actual[i])*(333.3/65536.0)*(3.141592/180.0);
                     }
 
+                    // Update monitor if active
+                    if (monitor_mode) {
+                        monitor_counter++;
+                        if (monitor_counter >= monitor_update_rate) {
+                            PrintJointValues();
+                            monitor_counter = 0;
+                        }
+                    }
+
                     // print joint angles
 //                    for (int i=0; i<4; i++)
 //                    {
@@ -230,60 +251,139 @@ void MainLoop()
     while (bRun)
     {
         int c = Getch();
-        switch (c)
-        {
-        case 'q':
-            if (pBHand) pBHand->SetMotionType(eMotionType_NONE);
-            bRun = false;
-            break;
+        
+        if (diy_mode) {
+            // DIY mode controls
+            if (c == 'x' || c == 'X') {
+                diy_mode = false;
+                printf("Exiting DIY mode\n");
+                continue;
+            }
+            else if (c == ' ') {
+                PrintDOFPositions();
+                continue;
+            }
+            else if (c >= '0' && c <= '9') {
+                selected_dof = c - '0';
+                printf("Selected DOF: %d (Current position: %6.3f)\n", selected_dof, q_des[selected_dof]);
+                continue;
+            }
+            else if (c == '!') { // Shift + 1
+                selected_dof = 10;
+                printf("Selected DOF: %d (Current position: %6.3f)\n", selected_dof, q_des[selected_dof]);
+                continue;
+            }
+            else if (c == '@') { // Shift + 2
+                selected_dof = 11;
+                printf("Selected DOF: %d (Current position: %6.3f)\n", selected_dof, q_des[selected_dof]);
+                continue;
+            }
+            else if (c == '#') { // Shift + 3
+                selected_dof = 12;
+                printf("Selected DOF: %d (Current position: %6.3f)\n", selected_dof, q_des[selected_dof]);
+                continue;
+            }
+            else if (c == '$') { // Shift + 4
+                selected_dof = 13;
+                printf("Selected DOF: %d (Current position: %6.3f)\n", selected_dof, q_des[selected_dof]);
+                continue;
+            }
+            else if (c == '%') { // Shift + 5
+                selected_dof = 14;
+                printf("Selected DOF: %d (Current position: %6.3f)\n", selected_dof, q_des[selected_dof]);
+                continue;
+            }
+            else if (c == '^') { // Shift + 6
+                selected_dof = 15;
+                printf("Selected DOF: %d (Current position: %6.3f)\n", selected_dof, q_des[selected_dof]);
+                continue;
+            }
+            else if (c == '+' || c == '=') {
+                q_des[selected_dof] += diy_step;
+                printf("DOF %d position increased to: %6.3f\n", selected_dof, q_des[selected_dof]);
+                if (pBHand) pBHand->SetMotionType(eMotionType_JOINT_PD);
+                continue;
+            }
+            else if (c == '-' || c == '_') {
+                q_des[selected_dof] -= diy_step;
+                printf("DOF %d position decreased to: %6.3f\n", selected_dof, q_des[selected_dof]);
+                if (pBHand) pBHand->SetMotionType(eMotionType_JOINT_PD);
+                continue;
+            }
+        }
+        else {
+            // Normal mode controls
+            switch (c)
+            {
+            case 'q':
+                if (pBHand) pBHand->SetMotionType(eMotionType_NONE);
+                bRun = false;
+                break;
 
-        case 'h':
-            if (pBHand) pBHand->SetMotionType(eMotionType_HOME);
-            break;
+            case 'h':
+                if (pBHand) pBHand->SetMotionType(eMotionType_HOME);
+                break;
 
-        case 'r':
-            if (pBHand) pBHand->SetMotionType(eMotionType_READY);
-            break;
+            case 'r':
+                if (pBHand) pBHand->SetMotionType(eMotionType_READY);
+                break;
 
-        case 'g':
-            if (pBHand) pBHand->SetMotionType(eMotionType_GRASP_3);
-            break;
+            case 'g':
+                if (pBHand) pBHand->SetMotionType(eMotionType_GRASP_3);
+                break;
 
-        case 'k':
-            if (pBHand) pBHand->SetMotionType(eMotionType_GRASP_4);
-            break;
+            case 'k':
+                if (pBHand) pBHand->SetMotionType(eMotionType_GRASP_4);
+                break;
 
-        case 'p':
-            if (pBHand) pBHand->SetMotionType(eMotionType_PINCH_IT);
-            break;
+            case 'p':
+                if (pBHand) pBHand->SetMotionType(eMotionType_PINCH_IT);
+                break;
 
-        case 'm':
-            if (pBHand) pBHand->SetMotionType(eMotionType_PINCH_MT);
-            break;
+            case 'm':
+                if (pBHand) pBHand->SetMotionType(eMotionType_PINCH_MT);
+                break;
 
-        case 'a':
-            if (pBHand) pBHand->SetMotionType(eMotionType_GRAVITY_COMP);
-            break;
+            case 'a':
+                if (pBHand) pBHand->SetMotionType(eMotionType_GRAVITY_COMP);
+                break;
 
-        case 'e':
-            if (pBHand) pBHand->SetMotionType(eMotionType_ENVELOP);
-            break;
+            case 'e':
+                if (pBHand) pBHand->SetMotionType(eMotionType_ENVELOP);
+                break;
 
-        case 'f':
-            if (pBHand) pBHand->SetMotionType(eMotionType_NONE);
-            break;
+            case 'f':
+                if (pBHand) pBHand->SetMotionType(eMotionType_NONE);
+                break;
 
-        case '1':
-            MotionRock();
-            break;
+            case 'd':
+                diy_mode = true;
+                printf("Entering DIY mode\n");
+                PrintDOFPositions();
+                break;
 
-        case '2':
-            MotionScissors();
-            break;
+            case '1':
+                MotionRock();
+                break;
 
-        case '3':
-            MotionPaper();
-            break;
+            case '2':
+                MotionScissors();
+                break;
+
+            case '3':
+                MotionPaper();
+                break;
+
+            case 'v':
+                monitor_mode = !monitor_mode;
+                if (monitor_mode) {
+                    printf("Entering monitor mode - displaying real-time joint values\n");
+                    monitor_counter = monitor_update_rate; // Force immediate update
+                } else {
+                    printf("Exiting monitor mode\n");
+                }
+                break;
+            }
         }
     }
 }
@@ -450,10 +550,49 @@ void PrintInstruction()
     printf("M: Two-finger pinch (middle-thumb)\n");
     printf("E: Envelop Grasp (all fingers)\n");
     printf("A: Gravity Compensation\n\n");
+    printf("D: Enter DIY Mode\n");
+    printf("   In DIY Mode:\n");
+    printf("   0-9: Select DOF (0-9)\n");
+    printf("   Shift + 0-5: Select DOF (10-15)\n");
+    printf("   +: Increase selected DOF position\n");
+    printf("   -: Decrease selected DOF position\n");
+    printf("   Space: Show current DOF positions\n");
+    printf("   X: Exit DIY Mode\n\n");
+    printf("V: Toggle real-time joint monitoring\n");
     printf("F: Servos OFF (any grasp cmd turns them back on)\n");
     printf("Q: Quit this program\n");
 
     printf("--------------------------------------------------\n\n");
+}
+
+void PrintDOFPositions()
+{
+    printf("\nCurrent DOF Positions (in radians):\n");
+    for(int i = 0; i < 4; i++) {
+        printf("Finger %d: ", i);
+        for(int j = 0; j < 4; j++) {
+            printf("%6.3f ", q_des[i*4 + j]);
+        }
+        printf("\n");
+    }
+    printf("Selected DOF: %d (Current position: %6.3f)\n", selected_dof, q_des[selected_dof]);
+}
+
+void PrintJointValues()
+{
+    printf("\033[2J\033[H"); // Clear screen and move cursor to top
+    printf("=== Real-time Joint Values ===\n");
+    printf("Press 'v' again to exit monitor mode\n\n");
+    
+    for(int i = 0; i < 4; i++) {
+        printf("Finger %d:\n", i);
+        printf("  Current: %6.3f %6.3f %6.3f %6.3f\n", 
+               q[i*4 + 0], q[i*4 + 1], q[i*4 + 2], q[i*4 + 3]);
+        printf("  Desired: %6.3f %6.3f %6.3f %6.3f\n", 
+               q_des[i*4 + 0], q_des[i*4 + 1], q_des[i*4 + 2], q_des[i*4 + 3]);
+        printf("  Torque:  %6.3f %6.3f %6.3f %6.3f\n\n", 
+               tau_des[i*4 + 0], tau_des[i*4 + 1], tau_des[i*4 + 2], tau_des[i*4 + 3]);
+    }
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////
