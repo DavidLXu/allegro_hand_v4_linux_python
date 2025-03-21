@@ -4,11 +4,15 @@
 // myAllegroHand.cpp : Defines the entry point for the console application.
 //
 #include <stdio.h>
+#include <stdlib.h>
 #include <stdint.h>
 #include <unistd.h>
 #include <termios.h>  //_getch
 #include <string.h>
 #include <pthread.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 #include "canAPI.h"
 #include "rDeviceAllegroHandCANDef.h"
 #include "RockScissorsPaper.h"
@@ -73,30 +77,175 @@ void ComputeTorque();
 void PrintDOFPositions();
 void PrintJointValues();
 
+// Add global variable for program control
+bool bRun = true;
+
+// TCP server settings
+#define TCP_PORT 12321
+bool tcpThreadRun = false;
+pthread_t tcpThread;
+int server_fd;
+
+// Add at the top with other global variables
+struct termios orig_termios;  // Store original terminal settings
+
+// Function to handle TCP client connections
+static void* tcpThreadProc(void* inst) {
+    struct sockaddr_in address;
+    int addrlen = sizeof(address);
+    char buffer[1024] = {0};
+    
+    // Creating socket file descriptor
+    if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
+        printf("TCP socket creation failed\n");
+        return NULL;
+    }
+    
+    int opt = 1;
+    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt))) {
+        printf("TCP setsockopt failed\n");
+        return NULL;
+    }
+    
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = INADDR_ANY;
+    address.sin_port = htons(TCP_PORT);
+    
+    if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) {
+        printf("TCP bind failed\n");
+        return NULL;
+    }
+    
+    if (listen(server_fd, 3) < 0) {
+        printf("TCP listen failed\n");
+        return NULL;
+    }
+    
+    printf("TCP server listening on port %d\n", TCP_PORT);
+    
+    while (tcpThreadRun) {
+        int client_socket;
+        if ((client_socket = accept(server_fd, (struct sockaddr *)&address, (socklen_t*)&addrlen)) < 0) {
+            printf("TCP accept failed\n");
+            continue;
+        }
+        
+        printf("New client connected\n");
+        
+        while (tcpThreadRun) {
+            int valread = read(client_socket, buffer, 1024);
+            if (valread <= 0) {
+                printf("Client disconnected\n");
+                break;
+            }
+            
+            // Parse joint values from buffer
+            // Format: "SET_JOINTS val1 val2 val3 ... val16"
+            if (strncmp(buffer, "SET_JOINTS", 10) == 0) {
+                char* token = strtok(buffer + 11, " ");
+                int joint = 0;
+                
+                while (token != NULL && joint < MAX_DOF) {
+                    q_des[joint] = atof(token);
+                    token = strtok(NULL, " ");
+                    joint++;
+                }
+                
+                if (pBHand) pBHand->SetMotionType(eMotionType_JOINT_PD);
+                
+                // Send acknowledgment
+                send(client_socket, "OK\n", 3, 0);
+            }
+            else if (strncmp(buffer, "QUIT", 4) == 0) {
+                // Acknowledge quit command
+                send(client_socket, "OK\n", 3, 0);
+                // Signal main loop to exit
+                bRun = false;
+                break;
+            }
+            
+            memset(buffer, 0, sizeof(buffer));
+        }
+        
+        close(client_socket);
+    }
+    
+    close(server_fd);
+    return NULL;
+}
+
+/////////////////////////////////////////////////////////////////////////////////////////
+// Function to restore terminal settings
+void RestoreTerminal() {
+    static bool restored = false;
+    if (!restored) {
+        // Get current settings
+        struct termios term;
+        tcgetattr(0, &term);
+        
+        // Enable canonical mode and echo
+        term.c_lflag |= (ICANON | ECHO);
+        
+        // Flush any pending input
+        tcflush(0, TCIFLUSH);
+        
+        // Apply settings
+        tcsetattr(0, TCSAFLUSH, &term);
+        restored = true;
+    }
+}
+
 /////////////////////////////////////////////////////////////////////////////////////////
 // Read keyboard input (one char) from stdin
 char Getch()
 {
-    /*#include <unistd.h>   //_getch*/
-    /*#include <termios.h>  //_getch*/
-    char buf=0;
-    struct termios old={0};
-    fflush(stdout);
-    if(tcgetattr(0, &old)<0)
-        perror("tcsetattr()");
-    old.c_lflag&=~ICANON;
-    old.c_lflag&=~ECHO;
-    old.c_cc[VMIN]=1;
-    old.c_cc[VTIME]=0;
-    if(tcsetattr(0, TCSANOW, &old)<0)
+    char buf = 0;
+    struct termios old = {0};
+    struct termios new_settings = {0};
+    
+    // Get current settings
+    if(tcgetattr(0, &old) < 0) {
+        perror("tcgetattr()");
+        return 0;
+    }
+    
+    // Save original settings (only if not already saved)
+    static bool settings_saved = false;
+    if (!settings_saved) {
+        orig_termios = old;
+        settings_saved = true;
+    }
+    
+    // Copy settings
+    new_settings = old;
+    
+    // Modify for raw input while keeping echo
+    new_settings.c_lflag &= ~ICANON;  // Disable canonical mode
+    new_settings.c_lflag |= ECHO;     // Enable echo
+    new_settings.c_cc[VMIN] = 1;
+    new_settings.c_cc[VTIME] = 0;
+    
+    // Apply new settings
+    if(tcsetattr(0, TCSANOW, &new_settings) < 0) {
         perror("tcsetattr ICANON");
-    if(read(0,&buf,1)<0)
+        return 0;
+    }
+    
+    // Read single character
+    if(read(0, &buf, 1) < 0) {
         perror("read()");
-    old.c_lflag|=ICANON;
-    old.c_lflag|=ECHO;
-    if(tcsetattr(0, TCSADRAIN, &old)<0)
-        perror ("tcsetattr ~ICANON");
-    printf("%c\n",buf);
+        tcsetattr(0, TCSANOW, &old);
+        return 0;
+    }
+    
+    // Print newline since we're in raw mode
+    write(1, "\n", 1);
+    
+    // Restore original settings
+    if(tcsetattr(0, TCSANOW, &old) < 0) {
+        perror("tcsetattr ~ICANON");
+    }
+    
     return buf;
 }
 
@@ -246,11 +395,19 @@ static void* ioThreadProc(void* inst)
 // Application main-loop. It handles the commands from rPanelManipulator and keyboard events
 void MainLoop()
 {
-    bool bRun = true;
+    // Remove local bRun variable to use global one
+    
+    // Start TCP server thread
+    tcpThreadRun = true;
+    pthread_create(&tcpThread, NULL, tcpThreadProc, 0);
+    printf("TCP server thread started\n");
 
     while (bRun)
     {
         int c = Getch();
+        if (c == 0) {  // Error in Getch
+            break;
+        }
         
         if (diy_mode) {
             // DIY mode controls
@@ -386,6 +543,14 @@ void MainLoop()
             }
         }
     }
+    
+    // Stop TCP server thread
+    tcpThreadRun = false;
+    shutdown(server_fd, SHUT_RDWR);
+    pthread_join(tcpThread, NULL);
+    
+    // Ensure terminal is restored
+    RestoreTerminal();
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////
@@ -665,6 +830,29 @@ int GetCANChannelIndex(const TCHAR* cname)
 // Program main
 int main(int argc, TCHAR* argv[])
 {
+    // Get initial terminal settings
+    if(tcgetattr(0, &orig_termios) < 0) {
+        perror("tcgetattr()");
+        return 1;
+    }
+    
+    // Make sure ECHO and ICANON are enabled in original settings
+    orig_termios.c_lflag |= (ICANON | ECHO);
+    if(tcsetattr(0, TCSAFLUSH, &orig_termios) < 0) {
+        perror("tcsetattr()");
+        return 1;
+    }
+    
+    // Flush any pending input
+    tcflush(0, TCIFLUSH);
+    
+    // Register cleanup for abnormal termination
+    atexit(RestoreTerminal);
+
+    // Set initial state of global control variables
+    bRun = true;
+    tcpThreadRun = false;
+
     PrintInstruction();
 
     memset(&vars, 0, sizeof(vars));
@@ -677,6 +865,9 @@ int main(int argc, TCHAR* argv[])
     if (CreateBHandAlgorithm() && OpenCAN())
         MainLoop();
 
+    // Ensure terminal is restored before cleanup
+    RestoreTerminal();
+    
     CloseCAN();
     DestroyBHandAlgorithm();
 
